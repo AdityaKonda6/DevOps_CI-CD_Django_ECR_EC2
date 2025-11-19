@@ -346,4 +346,63 @@ During the creation of this project, we encountered and solved the following spe
   * **Cause:** The AWS CLI tool was not installed on the Ubuntu EC2 instance.
   * **Solution:** SSH'd into the server and ran `sudo apt install awscli`.
 
+---
+---
+### Since AWS charges for running resources (EC2) and storage (ECR), deleting them is a smart move when you are not practicing.
 
+However, when you come back to run it again, **just updating the Secrets is not enough.** You also have to redo the **manual setup inside the new EC2**.
+
+Here is your **"Restart Checklist"** for when you come back next time:
+
+### 1\. What You Must Create in AWS
+
+1.  **Create ECR:** Create the repository again (e.g., `my-django-app`).
+2.  **Create EC2:** Launch a new Ubuntu instance.
+      * **Important:** Don't forget to select the **IAM Role** (`EC2-ECR-Pull-Role`) in the "Advanced Details" section.
+      * **Security Group:** Open Port **8000** and **22**.
+
+-----
+
+### 2\. Secrets You Must Update in GitHub
+
+Go to **Settings $\rightarrow$ Secrets** and update these 3 values (the others usually stay the same):
+
+| Secret Name | Status | Action |
+| :--- | :--- | :--- |
+| `EC2_HOST` | **Changed** | Update with the **new** Public IP of the new EC2. |
+| `AWS_ECR_REPO_URI` | **Changed** | Update with the **new** URI (even if the name is the same, it's good to check). |
+| `EC2_SSH_KEY` | **Changed** | If you created a **new** Key Pair, update this. (If you reused the old `.pem` file, you don't need to change this). |
+
+*Note: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` do **not** need to change unless you deleted the IAM User.*
+
+-----
+
+### 3\. The Step You Might Forget (Crucial\!) ⚠️
+
+Because the new EC2 is "fresh," it is empty. It does not have Docker or the AWS CLI installed. The pipeline will fail if you don't do this.
+
+**You must SSH into the new EC2 and run these commands once:**
+
+```bash
+# 1. Login
+ssh -i "your-key.pem" ubuntu@<NEW_PUBLIC_IP>
+
+# 2. Install Docker & AWS CLI again
+sudo apt update
+sudo apt install docker.io awscli -y
+sudo usermod -aG docker ubuntu
+
+# 3. Check if the IAM Role works
+aws ecr get-login-password --region us-east-1
+```
+
+### Summary
+
+So the formula for next time is:
+
+1.  Create AWS Resources (EC2 + ECR).
+2.  **Configure EC2 (Install Docker/AWS CLI).** \<--- *Don't skip this\!*
+3.  Update GitHub Secrets.
+4.  Push a change to GitHub.
+
+Enjoy your break from the costs\! You've done great work today.
