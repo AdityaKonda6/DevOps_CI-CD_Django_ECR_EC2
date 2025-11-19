@@ -7,7 +7,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # JOB 1: Security Checks (Trivy & Bandit)
+  # JOB 1: Security Checks (Bandit & Trivy Dependency/Secret Scan)
   security-check:
     runs-on: ubuntu-latest
     steps:
@@ -22,21 +22,21 @@ jobs:
       - name: Install Bandit
         run: pip install bandit
 
-      # Bandit Check: Fails if High Severity issues are found (-lll = High only)
-      - name: Run Bandit Security Check
+      - name: Run Bandit Security Check (SAST)
         run: bandit -lll -r . -x ./venv
 
-      # Trivy Check: Fails if CRITICAL or HIGH vulnerabilities are found
-      - name: Run Trivy Vulnerability Scanner
+      - name: Run Trivy Dependency and Secret Scan (FS Mode)
         uses: aquasecurity/trivy-action@master
         with:
+          # Targets requirements.txt in the helloworld folder for dependency scanning
+          scan-ref: './helloworld'
           scan-type: 'fs'
-          scan-ref: '.'
           format: 'table'
-          exit-code: '1'  # This breaks the build if issues are found
+          scanners: 'vuln,secret'
+          exit-code: '1'
           severity: 'CRITICAL,HIGH'
 
-  # JOB 2: Build and Push to ECR (Only runs if Security Check passes)
+  # JOB 2: Build and Push to ECR
   build-and-push:
     needs: security-check
     runs-on: ubuntu-latest
@@ -61,14 +61,40 @@ jobs:
           ECR_REPOSITORY: ${{ secrets.AWS_ECR_REPO_URI }}
           IMAGE_TAG: latest
         run: |
-          # We use the repository URI directly from secrets to avoid mismatch
+          # Builds from the helloworld directory where the Dockerfile is located
           docker build -t $ECR_REPOSITORY:$IMAGE_TAG ./helloworld
-          # docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REPOSITORY:$IMAGE_TAG
 
-  # JOB 3: Deploy to EC2 (Only runs if Build & Push passes)
-  deploy:
+  # JOB 3: Trivy Scan of Final Docker Image (The most comprehensive security gate)
+  trivy-scan-image:
     needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Run Trivy Image Scan (Container OS and Packages)
+        uses: aquasecurity/trivy-action@master
+        with:
+          # Scans the image that was just pushed to ECR
+          image-ref: ${{ secrets.AWS_ECR_REPO_URI }}:latest
+          scan-type: 'image'
+          format: 'table'
+          scanners: 'vuln,config' # Check for vulnerabilities and misconfigurations
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  # JOB 4: Deploy to EC2 (Only runs if both security checks and build pass)
+  deploy:
+    # Requires the image scan to pass before deployment begins
+    needs: trivy-scan-image
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to EC2 via SSH
@@ -81,13 +107,13 @@ jobs:
           script: |
             # 1. Login to ECR (using the IAM Role attached to EC2)
             aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_REPO_URI }}
-            
+
             # 2. Pull the latest image
             docker pull ${{ secrets.AWS_ECR_REPO_URI }}:latest
-            
+
             # 3. Stop and remove the old container (if it exists)
             docker stop django-app || true
             docker rm django-app || true
-            
+
             # 4. Run the new container
             docker run -d -p 8000:8000 --name django-app ${{ secrets.AWS_ECR_REPO_URI }}:latest
