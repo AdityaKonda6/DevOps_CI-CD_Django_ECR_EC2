@@ -1,141 +1,246 @@
-name: Django CI/CD Pipeline
-
+name: Django CI/CD Pipeline with Security Gates
 on:
+
   push:
+
     branches: [ "main" ]
+
   pull_request:
+
     branches: [ "main" ]
+
+
 
 jobs:
+
   # JOB 1: Security Checks (Bandit & Trivy Dependency/Secret Scan)
+
   security-check:
+
     runs-on: ubuntu-latest
+
     steps:
+
       - name: Checkout code
+
         uses: actions/checkout@v3
+
+
 
       - name: Set up Python
+
         uses: actions/setup-python@v4
+
         with:
+
           python-version: '3.10'
 
+
+
       - name: Install Bandit
+
         run: pip install bandit
 
+
+
       - name: Run Bandit Security Check (SAST)
+
         run: bandit -lll -r . -x ./venv
 
+
+
       - name: Run Trivy Dependency and Secret Scan (FS Mode)
+
         uses: aquasecurity/trivy-action@master
+
         with:
+
           # Targets requirements.txt in the helloworld folder for dependency scanning
+
           scan-ref: './helloworld'
+
           scan-type: 'fs'
+
           format: 'table'
+
           scanners: 'vuln,secret'
+
           exit-code: '1'
+
           severity: 'CRITICAL,HIGH'
 
----
+
+
   # JOB 2: Build and Push to ECR
+
   build-and-push:
+
     needs: security-check
+
     runs-on: ubuntu-latest
+
     steps:
+
       - name: Checkout code
+
         uses: actions/checkout@v3
 
+
+
       - name: Configure AWS credentials
+
         uses: aws-actions/configure-aws-credentials@v2
+
         with:
+
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
           aws-region: ${{ secrets.AWS_REGION }}
 
+
+
       - name: Login to Amazon ECR
+
         id: login-ecr
+
         uses: aws-actions/amazon-ecr-login@v1
+
         with:
-          # FIX: Masks the Docker password in the logs
+
+          # ADD THIS LINE TO MASK THE PASSWORD IN THE LOGS
+
           mask-password: true
+
+
 
       - name: Build, tag, and push image to Amazon ECR
+
         env:
+
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+
           ECR_REPOSITORY: ${{ secrets.AWS_ECR_REPO_URI }}
+
           IMAGE_TAG: latest
+
         run: |
+
           # Builds from the helloworld directory where the Dockerfile is located
+
           docker build -t $ECR_REPOSITORY:$IMAGE_TAG ./helloworld
+
           docker push $ECR_REPOSITORY:$IMAGE_TAG
 
----
+
+
   # JOB 3: Trivy Scan of Final Docker Image (The most comprehensive security gate)
+
   trivy-scan-image:
+
     needs: build-and-push
+
     runs-on: ubuntu-latest
+
     steps:
+
       - name: Configure AWS credentials
+
         uses: aws-actions/configure-aws-credentials@v2
+
         with:
+
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
           aws-region: ${{ secrets.AWS_REGION }}
 
+
+
       - name: Login to Amazon ECR
+
         uses: aws-actions/amazon-ecr-login@v1
+
         with:
-          # FIX: Masks the Docker password in the logs
+
+          # ADD THIS LINE TO MASK THE PASSWORD IN THE LOGS
+
           mask-password: true
 
+
+
       - name: Run Trivy Image Scan (Container OS and Packages)
+
         uses: aquasecurity/trivy-action@master
+
         with:
+
           # Scans the image that was just pushed to ECR
+
           image-ref: ${{ secrets.AWS_ECR_REPO_URI }}:latest
+
           scan-type: 'image'
+
           format: 'table'
+
           scanners: 'vuln,config' # Check for vulnerabilities and misconfigurations
+
           exit-code: '1'
+
           severity: 'CRITICAL,HIGH'
 
----
-  # JOB 4: Deploy to EC2 (Uses Docker Compose for multi-container deployment)
-  deploy:
-    # Requires the image scan to pass before deployment begins
-    needs: trivy-scan-image
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code for docker-compose.yml
-        uses: actions/checkout@v3
-        
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v0.1.6
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: 22
-          # NOTE: The root user is used here, but in a production setup, 
-          # consider ensuring the non-root user has docker permissions.
-          script: |
-            # Directory on EC2 where you store your code, especially docker-compose.yml
-            APP_DIR="/home/${{ secrets.EC2_USER }}/django-app" # <<< Set your application root path
 
-            # 1. Login to ECR
+
+  # JOB 4: Deploy to EC2 (Only runs if both security checks and build pass)
+
+  deploy:
+
+    # Requires the image scan to pass before deployment begins
+
+    needs: trivy-scan-image
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Deploy to EC2 via SSH
+
+        uses: appleboy/ssh-action@v0.1.6
+
+        with:
+
+          host: ${{ secrets.EC2_HOST }}
+
+          username: ${{ secrets.EC2_USER }}
+
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          port: 22
+
+          script: |
+
+            # 1. Login to ECR (using the IAM Role attached to EC2)
+
             aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_REPO_URI }}
 
-            # 2. Navigate to the application directory
-            # This is critical for 'docker compose' to find docker-compose.yml
-            cd $APP_DIR
 
-            # 3. Pull the latest images for the stack (App from ECR, DB from Docker Hub/Registry)
-            docker compose pull
-            
-            # 4. Gracefully stop and remove the old stack (if running)
-            docker compose down || true
 
-            # 5. Start the new stack in detached mode
-            # This creates the internal network, allowing the Django service 
-            # to resolve the database hostname (e.g., 'db').
-            docker compose up -d
+            # 2. Pull the latest image
+
+            docker pull ${{ secrets.AWS_ECR_REPO_URI }}:latest
+
+
+
+            # 3. Stop and remove the old container (if it exists)
+
+            docker stop django-app || true
+
+            docker rm django-app || true
+
+
+
+            # 4. Run the new container
+
+            docker run -d -p 8000:8000 --name django-app ${{ secrets.AWS_ECR_REPO_URI }}:latest
