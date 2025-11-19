@@ -1,5 +1,5 @@
 # Use a slim Python image
-FROM python:3.11-slim
+FROM python:3.11-alpine
 
 # Set environment
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -28,6 +28,12 @@ COPY . /app
 # Collect static files (only necessary if DEBUG=False and you use static files)
 ENV DJANGO_SETTINGS_MODULE=helloworld.settings
 RUN python manage.py collectstatic --noinput || true
+
+# 1. Create a non-root user
+RUN adduser --system --group django_user
+
+# 2. Switch to the non-root user
+USER django_user
 
 # Expose port (gunicorn will listen here)
 EXPOSE 8000
