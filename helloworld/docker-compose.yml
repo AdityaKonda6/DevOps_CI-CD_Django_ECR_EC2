@@ -1,5 +1,7 @@
 version: "3.9"
+
 services:
+  # 1. PostgreSQL Database Service
   db:
     image: postgres:16-alpine
     environment:
@@ -8,28 +10,87 @@ services:
       POSTGRES_PASSWORD: hello123
     volumes:
       - postgres_data:/var/lib/postgresql/data/
-    ports:
-      - "5432:5432"
+    # Note: Removed ports mapping for 5432. It's only needed internally.
+    
+    # 💡 ADDED: Health check to ensure DB is accepting connections before Django starts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hello -d hellodb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
+  # 2. Django Web Application Service
   web:
-    build: .
+    # 💡 CHANGED: Replace 'build: .' with the ECR image reference
+    # Docker Compose will pull this image during the 'docker compose pull' step.
+    image: 534232118663.dkr.ecr.ap-south-1.amazonaws.com/mydjango:latest # <-- REPLACE with your actual ECR URI
+    
+    # 💡 CHANGED: Use Gunicorn for a near-production deployment and wait for DB health
     command: >
-      sh -c "python manage.py migrate --noinput &&
-             python manage.py runserver 0.0.0.0:8000"
-    volumes:
-      - .:/app
+      sh -c "
+      /usr/local/bin/python /usr/local/bin/wait-for-it.sh db:5432 --timeout=30 --
+      python manage.py migrate --noinput &&
+      gunicorn helloworld.wsgi:application --bind 0.0.0.0:8000
+      "
+    # volumes:
+    #   - .:/app # Removed volume mapping, as we don't want local code sync in CD
+
     ports:
       - "8000:8000"
       
     environment:
+      # These environment variables must be used in your Django settings.py file
       - DEBUG=1
       - DATABASE_NAME=hellodb
       - DATABASE_USER=hello
       - DATABASE_PASSWORD=hello123
       - DATABASE_HOST=db
       - DATABASE_PORT=5432
+      # Add ECR repository URL here if needed in Django settings
+      # - ECR_REPOSITORY=534232118663.dkr.ecr.ap-south-1.amazonaws.com/mydjango
+
+    # 💡 CHANGED: Wait for DB service, and specifically wait until the health check passes
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+
+
+# version: "3.9"
+# services:
+#   db:
+#     image: postgres:16-alpine
+#     environment:
+#       POSTGRES_DB: hellodb
+#       POSTGRES_USER: hello
+#       POSTGRES_PASSWORD: hello123
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data/
+#     ports:
+#       - "5432:5432"
+
+#   web:
+#     build: .
+#     command: >
+#       sh -c "python manage.py migrate --noinput &&
+#              python manage.py runserver 0.0.0.0:8000"
+#     volumes:
+#       - .:/app
+#     ports:
+#       - "8000:8000"
+      
+#     environment:
+#       - DEBUG=1
+#       - DATABASE_NAME=hellodb
+#       - DATABASE_USER=hello
+#       - DATABASE_PASSWORD=hello123
+#       - DATABASE_HOST=db
+#       - DATABASE_PORT=5432
+#     depends_on:
+#       - db
+
+# volumes:
+#   postgres_data:
