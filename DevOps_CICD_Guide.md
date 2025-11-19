@@ -24,8 +24,42 @@ This guide documents the complete setup of a DevOps pipeline that automates secu
 ### 2. Create IAM Role for EC2
 * Go to **IAM** -> **Roles** -> **Create Role**.
 * Trusted Entity: **EC2**.
-* Permissions: Search and add `AmazonEC2ContainerRegistryReadOnly`.
+* Permissions: Search and add `AmazonEC2ContainerRegistryReadOnly` `AmazonEC2ContainerRegistryPowerUser` `AmazonEC2ContainerRegistryFullAccess`.
 * Name: `EC2-ECR-Pull-Role`.
+* Also create a policy and Select JSON and paste below code on JSON
+```bash
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ecr:GetAuthorizationToken",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload",
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:PutImage",
+                "ecr:CreateRepository",
+                "ecr:DescribeRepositories",
+                "ecr:GetRepositoryPolicy",
+                "ecr:ListImages",
+                "ecr:BatchGetImage",
+                "ecr:DeleteRepository",
+                "ecr:BatchDeleteImage"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
 
 ### 3. Launch EC2 Instance
 * **OS:** Ubuntu 22.04 or 24.04.
