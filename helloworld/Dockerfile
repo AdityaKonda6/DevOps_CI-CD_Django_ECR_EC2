@@ -36,8 +36,11 @@ RUN python manage.py collectstatic --noinput || true
 # Entrypoint setup
 COPY ./entrypoint.sh /app/entrypoint.sh
 
+# 🔑 FIX: Change ownership of the entire application directory 
+# so the non-root user can access and execute files.
+RUN chown -R django_user:django_user /app
 # 🔑 FIX: Run chmod as root user (before switching the user context)
-RUN chmod +x /app/entrypoint.sh
+# RUN chmod +x /app/entrypoint.sh
 
 # 1. Create a non-root group explicitly
 RUN addgroup -S django_user
