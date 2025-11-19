@@ -1,0 +1,92 @@
+name: Django CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # JOB 1: Security Checks (Trivy & Bandit)
+  security-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      # Bandit Check: Fails if High Severity issues are found (-lll = High only)
+      - name: Run Bandit Security Check
+        run: bandit -lll -r .
+
+      # Trivy Check: Fails if CRITICAL or HIGH vulnerabilities are found
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '1'  # This breaks the build if issues are found
+          severity: 'CRITICAL,HIGH'
+
+  # JOB 2: Build and Push to ECR (Only runs if Security Check passes)
+  build-and-push:
+    needs: security-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.AWS_ECR_REPO_URI }}
+          IMAGE_TAG: latest
+        run: |
+          # We use the repository URI directly from secrets to avoid mismatch
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REPOSITORY:$IMAGE_TAG
+
+  # JOB 3: Deploy to EC2 (Only runs if Build & Push passes)
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v0.1.6
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script: |
+            # 1. Login to ECR (using the IAM Role attached to EC2)
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_REPO_URI }}
+            
+            # 2. Pull the latest image
+            docker pull ${{ secrets.AWS_ECR_REPO_URI }}:latest
+            
+            # 3. Stop and remove the old container (if it exists)
+            docker stop django-app || true
+            docker rm django-app || true
+            
+            # 4. Run the new container
+            docker run -d -p 8000:8000 --name django-app ${{ secrets.AWS_ECR_REPO_URI }}:latest
