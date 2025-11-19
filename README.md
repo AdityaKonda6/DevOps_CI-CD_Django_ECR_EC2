@@ -7,7 +7,9 @@ Purpose: Dockerize a Django app, scan the image, push to AWS ECR, and deploy to 
 This README collects **everything**: file descriptions, local setup, Docker, CloudShell/ECR steps, EC2 pull & run, image scanning (Trivy HTML), SAST (Bandit), DAST (OWASP ZAP), and helpful troubleshooting.
 
 ---
+<img width="1536" height="1024" alt="ChatGPT Image Nov 19, 2025, 11_26_46 AM" src="https://github.com/user-attachments/assets/fc3890ca-1a97-4424-9329-0f1ebae5d455" />
 
+---
 ## Table of contents
 
 1. [Project files & purpose](#project-files--purpose)
