@@ -35,11 +35,18 @@ RUN python manage.py collectstatic --noinput || true
 
 # --- Security and Run Commands ---
 
-# 1. Create a non-root user (Fixes Trivy Misconfig issue)
-RUN adduser -S -D -G django_user django_user
+# 1. Create a non-root group explicitly
+RUN addgroup -S django_user
 
-# 2. Switch to the non-root user
+# 2. Create the non-root user and assign them to the existing group
+# -S: Create a system user
+# -D: Don't assign a password
+# -G: Assign the user to the existing group 'django_user'
+RUN adduser -S -D -G django_user django_user
+    
+# 3. Switch to the non-root user
 USER django_user
+
 
 # Expose port (gunicorn will listen here)
 EXPOSE 8000
