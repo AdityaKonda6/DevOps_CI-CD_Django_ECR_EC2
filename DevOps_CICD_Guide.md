@@ -1,0 +1,349 @@
+
+
+# End-to-End CI/CD Pipeline: Django to AWS EC2 via GitHub Actions
+
+This guide documents the complete setup of a DevOps pipeline that automates security scanning, container building (Docker), pushing to AWS ECR, and deploying to an AWS EC2 instance.
+
+## 📋 Architecture Overview
+1.  **Developer** pushes code to GitHub (`main` branch).
+2.  **GitHub Actions** triggers the pipeline.
+3.  **Security Job:** Runs **Bandit** (SAST) and **Trivy** (Container scan).
+4.  **Build Job:** Builds Docker image and pushes to **AWS ECR**.
+5.  **Deploy Job:** SSHs into **AWS EC2**, pulls the new image, and restarts the container.
+
+---
+
+## 🛠 Phase 1: AWS Setup (Infrastructure)
+
+### 1. Create AWS ECR Repository
+* Go to **AWS Console** -> **Elastic Container Registry (ECR)**.
+* Create a **Private Repository**.
+* Name: `my-django-app`.
+* **Save the URI:** (e.g., `123456789012.dkr.ecr.us-east-1.amazonaws.com/my-django-app`).
+
+### 2. Create IAM Role for EC2
+* Go to **IAM** -> **Roles** -> **Create Role**.
+* Trusted Entity: **EC2**.
+* Permissions: Search and add `AmazonEC2ContainerRegistryReadOnly`.
+* Name: `EC2-ECR-Pull-Role`.
+
+### 3. Launch EC2 Instance
+* **OS:** Ubuntu 22.04 or 24.04.
+* **Key Pair:** Create and download `.pem` file (e.g., `django-key.pem`).
+* **Network Security Group:**
+    * Allow SSH (Port 22).
+    * Allow Custom TCP (Port 8000) - *For Django*.
+* **Advanced Details (Crucial):** In "IAM Instance Profile", select `EC2-ECR-Pull-Role`.
+
+### 4. Configure EC2 Server (Manual Steps)
+SSH into your instance:
+```bash
+ssh -i "django-key.pem" ubuntu@<EC2_PUBLIC_IP>
+````
+
+Run the following commands inside EC2 to prepare it:
+
+```bash
+# 1. Update OS
+sudo apt update
+
+# 2. Install Docker
+sudo apt install docker.io -y
+sudo usermod -aG docker ubuntu
+
+# 3. Install AWS CLI (Required for login command)
+sudo apt install awscli -y
+
+# 4. Verify Permissions
+aws ecr get-login-password --region us-east-1
+# (If this outputs a long token, permissions are correct)
+```
+
+-----
+
+## 💻 Phase 2: Local Project Configuration
+
+### 1\. Dockerfile
+
+Ensure a `Dockerfile` exists (If your code is in a subfolder like `helloworld`, place it there).
+
+```dockerfile
+# Use a slim Python image
+FROM python:3.11-slim
+
+# Set environment
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Create app dir
+WORKDIR /app
+
+# Install system deps (for psycopg2) and build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    libpq-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy dependency files first for caching
+COPY requirements.txt /app/
+
+# Install Python dependencies
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+
+# Copy application code
+COPY . /app
+
+# Collect static files (only necessary if DEBUG=False and you use static files)
+ENV DJANGO_SETTINGS_MODULE=helloworld.settings
+RUN python manage.py collectstatic --noinput || true
+
+# Expose port (gunicorn will listen here)
+EXPOSE 8000
+
+# Entrypoint will run migrations and start server (see entrypoint.sh below)
+COPY ./entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Default command
+CMD ["/app/entrypoint.sh"]
+
+```
+
+### 2\. Requirements
+
+Generate your requirements file:
+
+```bash
+Django>=4.2
+gunicorn
+psycopg2-binary
+```
+### 3\. Entrypoint.sh
+
+```bash
+#!/bin/bash
+
+# Fail fast
+set -e
+
+# Optionally wait for DB (simple loop)
+if [ "$DATABASE_URL" ]; then
+  echo "Waiting for database..."
+  # You could use dj-database-url + a wait script here. Keep simple:
+  sleep 1
+fi
+
+# Run migrations
+echo "Running migrations..."
+python manage.py migrate --noinput
+
+# Collect static if in production (DEBUG=False)
+if [ "$DJANGO_COLLECTSTATIC" = "1" ]; then
+  echo "Collecting static files..."
+  python manage.py collectstatic --noinput
+fi
+
+# Start server with gunicorn
+echo "Starting Gunicorn..."
+exec gunicorn helloworld.wsgi:application \
+  --bind 0.0.0.0:8000 \
+  --workers 3 \
+  --log-level info
+
+```
+
+### 4\. Docker-Compose.yml 
+
+```bash
+version: "3.9"
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: hellodb
+      POSTGRES_USER: hello
+      POSTGRES_PASSWORD: hello123
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  web:
+    build: .
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=1
+      - DATABASE_NAME=hellodb
+      - DATABASE_USER=hello
+      - DATABASE_PASSWORD=hello123
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+    depends_on:
+      - db
+
+volumes:
+  db_data:
+```
+
+-----
+
+## 🔐 Phase 3: GitHub Secrets
+
+Go to **Settings** -\> **Secrets and variables** -\> **Actions** -\> **New repository secret**. Add these:
+
+| Secret Name | Description |
+| :--- | :--- |
+| `AWS_ACCESS_KEY_ID` | Go to your AWS account overview
+||Account menu in the upper-right (has your name on it)
+||sub-menu: Security Credentials |
+| `AWS_SECRET_ACCESS_KEY` | Your IAM User Secret Key |
+||Sign in to the AWS Management Console and navigate to the IAM console.
+||Click on your profile name in the top right corner and select "My Security Credentials".
+||Scroll to the "Access Keys" section and click "Create new access key".|
+| `AWS_REGION` | `us-east-1` |
+| `AWS_ECR_REPO_URI` | The URI copied from ECR (without tags) |
+| `EC2_HOST` | Public IP of the EC2 instance
+||Public IPv4 address
+||13.233.151.*** |
+| `EC2_USER` | `ubuntu` |
+| `EC2_SSH_KEY` | The entire content of your `.pem` file |
+
+-----
+
+## 🚀 Phase 4: The Pipeline (`.github/workflows/main.yml`)
+
+Create this file in your repository.
+
+```yaml
+name: Django CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  # JOB 1: Security Checks
+  security-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit Security Check
+        # EXCLUDES venv folder to prevent false positives
+        run: bandit -lll -r . -x ./venv,./tests
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  # JOB 2: Build and Push to ECR
+  build-and-push:
+    needs: security-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.AWS_ECR_REPO_URI }}
+          IMAGE_TAG: latest
+        run: |
+          # Note: Pointing to ./helloworld folder where Dockerfile is located
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG ./helloworld
+          docker push $ECR_REPOSITORY:$IMAGE_TAG
+
+  # JOB 3: Deploy to EC2
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v0.1.6
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script: |
+            # Login to ECR using installed AWS CLI
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_REPO_URI }}
+            
+            # Pull and Run
+            docker pull ${{ secrets.AWS_ECR_REPO_URI }}:latest
+            docker stop django-app || true
+            docker rm django-app || true
+            docker run -d -p 8000:8000 --name django-app ${{ secrets.AWS_ECR_REPO_URI }}:latest
+```
+
+-----
+
+## ⚠️ Common Mistakes & Solutions (Troubleshooting Log)
+
+During the creation of this project, we encountered and solved the following specific errors:
+
+### 1\. Git Authentication Error
+
+  * **Error:** `Password authentication is not supported for Git operations.`
+  * **Cause:** GitHub removed password support for CLI.
+  * **Solution:** Generated a **Personal Access Token (PAT)** in GitHub Settings -\> Developer Settings and used it as the password.
+
+### 2\. Branch Name Mismatch
+
+  * **Error:** `error: src refspec main does not match any`
+  * **Cause:** Local branch was named `master`, but remote expected `main`.
+  * **Solution:** Renamed local branch: `git branch -m main`.
+
+### 3\. Bandit Security Scan Failed
+
+  * **Error:** Bandit scanned thousands of files and crashed.
+  * **Cause:** Bandit was scanning the virtual environment (`venv`) folder which contains third-party library code.
+  * **Solution:** Updated command to exclude that folder: `bandit -lll -r . -x ./venv`.
+
+### 4\. Docker Build Failed
+
+  * **Error:** `failed to read dockerfile: open Dockerfile: no such file or directory`
+  * **Cause:** The `Dockerfile` was inside a subfolder (`helloworld/`), but the pipeline was looking in the root (`.`).
+  * **Solution:** Updated the build command path: `docker build ... ./helloworld`.
+
+### 5\. EC2 Deployment Failed
+
+  * **Error:** `bash: line 2: aws: command not found`
+  * **Cause:** The AWS CLI tool was not installed on the Ubuntu EC2 instance.
+  * **Solution:** SSH'd into the server and ran `sudo apt install awscli`.
+
+
