@@ -1,13 +1,13 @@
 version: "3.9"
 services:
   db:
-    image: postgres:15
+    image: postgres:16-alpine
     environment:
       POSTGRES_DB: hellodb
       POSTGRES_USER: hello
       POSTGRES_PASSWORD: hello123
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data/
     ports:
       - "5432:5432"
 
@@ -20,6 +20,7 @@ services:
       - .:/app
     ports:
       - "8000:8000"
+      
     environment:
       - DEBUG=1
       - DATABASE_NAME=hellodb
@@ -31,4 +32,4 @@ services:
       - db
 
 volumes:
-  db_data:
+  postgres_data:
