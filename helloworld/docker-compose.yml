@@ -29,7 +29,6 @@ services:
     # 💡 CHANGED: Use Gunicorn for a near-production deployment and wait for DB health
     command: >
       sh -c "
-      /usr/local/bin/python /usr/local/bin/wait-for-it.sh db:5432 --timeout=30 --
       python manage.py migrate --noinput &&
       gunicorn helloworld.wsgi:application --bind 0.0.0.0:8000
       "
