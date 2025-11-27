@@ -24,7 +24,7 @@ services:
   web:
     # 💡 CHANGED: Replace 'build: .' with the ECR image reference
     # Docker Compose will pull this image during the 'docker compose pull' step.
-    image: 534232118663.dkr.ecr.ap-south-1.amazonaws.com/mydjango:latest # <-- REPLACE with your actual ECR URI
+    image: 534232118663.dkr.ecr.ap-south-1.amazonaws.com/ec2-ecr-repo:latest # <-- REPLACE with your actual ECR URI
     
     # 💡 CHANGED: Use Gunicorn for a near-production deployment and wait for DB health
     command: >
