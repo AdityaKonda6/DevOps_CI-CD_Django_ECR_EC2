@@ -1,4 +1,4 @@
-![Build Status](https://github.com/AdityaKonda6/django-devsecops-pipeline/actions/workflows/django-cicd.yml/badge.svg)
+[![Django CI/CD Pipeline with Security Gates](https://github.com/AdityaKonda6/django-devsecops-pipeline/actions/workflows/django-cicd.yml/badge.svg?event=push)](https://github.com/AdityaKonda6/django-devsecops-pipeline/actions/workflows/django-cicd.yml)
 ![Python](https://img.shields.io/badge/Python-3.10-blue)
 ![AWS](https://img.shields.io/badge/AWS-EC2%20%7C%20ECR-orange)
 ![Docker](https://img.shields.io/badge/Docker-Container-blue)

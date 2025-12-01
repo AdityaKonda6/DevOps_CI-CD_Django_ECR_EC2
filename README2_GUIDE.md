@@ -247,7 +247,7 @@ Go to **Settings** -\> **Secrets and variables** -\> **Actions** -\> **New repos
 | `EC2_HOST` | Public IP of the EC2 instance
 ||Public IPv4 address
 ||13.233.151.*** |
-| `EC2_USER` | `ubuntu` |
+| `EC2_USER` | ubuntu |
 | `EC2_SSH_KEY` | The entire content of your `.pem` file |
 
 -----
